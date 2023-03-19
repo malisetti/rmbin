@@ -13,16 +13,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type LocalRecycleBin struct {
+type RecycleBin struct {
 	trashPath string
 	trashMap  map[string]string
 }
 
-func NewLocalRecycleBin(trashPath string, trashMap map[string]string) *LocalRecycleBin {
-	return &LocalRecycleBin{trashPath, trashMap}
+func NewRecycleBin(trashPath string, trashMap map[string]string) *RecycleBin {
+	return &RecycleBin{trashPath, trashMap}
 }
 
-func (rb *LocalRecycleBin) Delete(path string) error {
+func (rb *RecycleBin) Delete(path string) error {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return err
@@ -49,7 +49,7 @@ func (rb *LocalRecycleBin) Delete(path string) error {
 	return nil
 }
 
-func (rb *LocalRecycleBin) Restore(path string) error {
+func (rb *RecycleBin) Restore(path string) error {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return err
@@ -71,7 +71,7 @@ func (rb *LocalRecycleBin) Restore(path string) error {
 	return nil
 }
 
-func (rb *LocalRecycleBin) GarbageCollect(days int) error {
+func (rb *RecycleBin) GarbageCollect(days int) error {
 	cutoff := time.Now().AddDate(0, 0, -days).Unix()
 	err := filepath.Walk(rb.trashPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -93,7 +93,14 @@ func (rb *LocalRecycleBin) GarbageCollect(days int) error {
 	return err
 }
 
-func (rb *LocalRecycleBin) SaveTrashMap(p string) error {
+func (rb *RecycleBin) List() error {
+	for k := range rb.trashMap {
+		fmt.Println(k)
+	}
+	return nil
+}
+
+func (rb *RecycleBin) SaveTrashMap(p string) error {
 	f, err := os.Create(p)
 	if err != nil {
 		return err
@@ -107,7 +114,7 @@ func (rb *LocalRecycleBin) SaveTrashMap(p string) error {
 	return nil
 }
 
-func (rb *LocalRecycleBin) GetOriginalPath(trashFile string) string {
+func (rb *RecycleBin) GetOriginalPath(trashFile string) string {
 	for k, v := range rb.trashMap {
 		if v == trashFile {
 			return k
@@ -177,9 +184,12 @@ func main() {
 		fmt.Println("failed to load trashMap:", err)
 		os.Exit(1)
 	}
-	rb := NewLocalRecycleBin(trashPath, trashMap)
+	rb := NewRecycleBin(trashPath, trashMap)
 
-	var rootCmd = &cobra.Command{Use: "rmbin"}
+	var rootCmd = &cobra.Command{
+		Use:     "rmbin",
+		Version: "v0.0.2",
+	}
 
 	var deleteCmd = &cobra.Command{
 		Use:     "delete [files...]",
@@ -235,6 +245,20 @@ func main() {
 		},
 	}
 
+	var listCmd = &cobra.Command{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "Lists the recycle bin files",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			err := rb.List()
+			if err != nil {
+				fmt.Println(err)
+			}
+			return nil
+		},
+	}
+
+	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(deleteCmd)
 	rootCmd.AddCommand(restoreCmd)
 	rootCmd.AddCommand(garbageCollectCmd)

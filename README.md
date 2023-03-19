@@ -7,6 +7,7 @@ To use rmbin, you can run the following commands:
 - `rmbin delete [files...]`: Moves one or more files to the recycle bin. You can specify one or more file paths as arguments.
 - `rmbin restore [files...]`: Restores one or more files from the recycle bin. You can specify one or more file paths as arguments.
 - `rmbin gc [days]`: Permanently deletes files that have been in the recycle bin for the specified number of days. If no number of days is specified, files will be deleted that are over 30 days old.
+- `rmbin list`: Lists the files in the recycle bin.
 - `rmbin help`: Shows help information for the program.
 
 ## Configuration
