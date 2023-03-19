@@ -3,195 +3,246 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/fs"
-	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/juju/fslock"
+	"github.com/spf13/cobra"
 )
 
-const trashConfPath = "/home/s/.trashconf.json"
-const trashCleanTTL = 60
-
-// 7 * 24 * 60 * 60
-
-type trash struct {
-	Dir     string                 `json:"dir"`
-	Pathmap map[string]interface{} `json:"pathmap"`
-	TTL     int                    `json:"ttl"`
+type LocalRecycleBin struct {
+	trashPath string
+	trashMap  map[string]string
 }
 
-func newTrash(p string, ttl int) *trash {
-	return &trash{
-		Dir:     p,
-		Pathmap: make(map[string]interface{}),
-		TTL:     ttl,
-	}
+func NewLocalRecycleBin(trashPath string, trashMap map[string]string) *LocalRecycleBin {
+	return &LocalRecycleBin{trashPath, trashMap}
 }
 
-func (t *trash) put(cdir string, xs ...string) error {
-	for _, x := range xs {
-		rp, err := filepath.Rel(cdir, filepath.Dir(x))
-		if err != nil {
-			rp = cdir
-		}
-		ap, err := filepath.Abs(rp)
-		if err != nil {
-			ap = rp
-		}
-
-		tx0 := filepath.Join(t.Dir, ap)
-		tx := filepath.Join(tx0, filepath.Base(x))
-		tx1 := filepath.Join(ap, filepath.Base(x))
-
-		_ = os.MkdirAll(tx0, 0755)
-		err = os.Rename(tx1, tx)
-		if err != nil {
-			return err
-		}
-		t.Pathmap[tx1] = nil
+func (rb *LocalRecycleBin) Delete(path string) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	fileInfo, err := os.Stat(absPath)
+	if err != nil {
+		return err
 	}
 
+	fileName := fileInfo.Name()
+	fileExt := filepath.Ext(fileName)
+	fileBase := strings.TrimSuffix(fileName, fileExt)
+	trashFileName := fmt.Sprintf("%s_%d%s", fileBase, time.Now().Unix(), fileExt)
+
+	trashPath := filepath.Join(rb.trashPath, trashFileName)
+	err = os.Rename(absPath, trashPath)
+	if err != nil {
+		return err
+	}
+
+	rb.trashMap[absPath] = trashPath
+
+	fmt.Printf("Deleted %s, moved to %s\n", path, trashPath)
 	return nil
 }
 
-func (t *trash) restore(cdir string, xs ...string) error {
-	for _, x := range xs {
-		rp, err := filepath.Rel(cdir, x)
-		if err != nil {
-			rp = cdir
-		}
-		ap, err := filepath.Abs(rp)
-		if err != nil {
-			ap = rp
-		}
+func (rb *LocalRecycleBin) Restore(path string) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
 
-		tx1 := filepath.Join(ap, x)
+	trashFilePath, ok := rb.trashMap[absPath]
+	if !ok {
+		return nil
+	}
 
-		if _, ok := t.Pathmap[tx1]; ok {
-			err := os.Rename(filepath.Join(t.Dir, tx1), tx1)
+	err = os.Rename(trashFilePath, absPath)
+	if err != nil {
+		return err
+	}
+
+	delete(rb.trashMap, absPath)
+
+	fmt.Printf("Restored %s\n", absPath)
+	return nil
+}
+
+func (rb *LocalRecycleBin) GarbageCollect(days int) error {
+	cutoff := time.Now().AddDate(0, 0, -days).Unix()
+	err := filepath.Walk(rb.trashPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.ModTime().Unix() < cutoff {
+			err = os.RemoveAll(path)
 			if err != nil {
 				return err
 			}
-			delete(t.Pathmap, tx1)
-			tx1 = filepath.Join(t.Dir, tx1)
-			for {
-				tx1 = filepath.Dir(tx1)
-				if tx1 == t.Dir {
-					break
-				}
-				bf, err := os.Open(tx1)
-				if err != nil {
-					return err
-				}
-				defer bf.Close()
-				ns, _ := bf.Readdirnames(1)
-				if len(ns) <= 1 {
-					return os.Remove(tx1)
-				}
-			}
-		}
-	}
-	return nil
-}
-
-func (t *trash) list() {
-	for k, _ := range t.Pathmap {
-		fmt.Println(k)
-	}
-}
-
-func (t *trash) clean() error {
-	return filepath.WalkDir(t.Dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() && info.ModTime().Before(time.Now().Add(time.Duration(t.TTL))) {
-			if err := os.Remove(path); err != nil {
-				return err
+			originalPath := getOriginalPath(rb, path)
+			if originalPath != "" {
+				delete(rb.trashMap, originalPath)
+				fmt.Printf("Removed %s\n", path)
 			}
 		}
 		return nil
 	})
+	return err
+}
+
+func (rb *LocalRecycleBin) SaveTrashMap() error {
+	f, err := os.Create(filepath.Join(rb.trashPath, ".trashmap.json"))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	encoder := json.NewEncoder(f)
+	err = encoder.Encode(rb.trashMap)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func getOriginalPath(rb *LocalRecycleBin, trashFile string) string {
+	for k, v := range rb.trashMap {
+		if v == trashFile {
+			return k
+
+		}
+	}
+	return ""
+}
+
+func loadTrashMap(trashMapPath string) (map[string]string, error) {
+	trashMap := make(map[string]string)
+
+	file, err := os.Open(trashMapPath)
+	if err != nil {
+		return trashMap, err
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(file)
+	_ = decoder.Decode(&trashMap)
+
+	return trashMap, nil
+}
+
+func initTrashMap(trashMapPath string) error {
+	_, err := os.Stat(trashMapPath)
+	if os.IsNotExist(err) {
+		// Create the directory for the trash map file if it doesn't exist
+		err = os.MkdirAll(filepath.Dir(trashMapPath), 0755)
+		if err != nil {
+			return err
+		}
+
+		// Create an empty trash map file
+		file, err := os.Create(trashMapPath)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+	} else if err != nil {
+		return err
+	}
+	return nil
 }
 
 func main() {
-	var t *trash = &trash{}
-	var err error
-
-	dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		log.Fatal(err)
-	}
-
-	switch os.Args[1] {
-	case "put", "p", "restore", "r", "ls", "gc":
-	default:
-		fmt.Fprintf(os.Stderr, "%s\n", "put, p, restore, r, ls, gc are valid cmds")
+		fmt.Println("Failed to get user home directory:", err)
 		os.Exit(1)
 	}
-
-	conff, err := os.ReadFile(trashConfPath)
-	if err == nil {
-		err = json.Unmarshal(conff, &t)
-	}
-
+	trashPath := filepath.Join(homeDir, ".trash")
+	trashMapPath := filepath.Join(trashPath, ".trashmap.json")
+	err = initTrashMap(trashMapPath)
 	if err != nil {
-		td, err := ioutil.TempDir("", "*")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s\n", err.Error())
-		}
-		t = newTrash(td, trashCleanTTL)
+		fmt.Println(err)
+		os.Exit(1)
 	}
-	if t.Pathmap == nil {
-		t.Pathmap = make(map[string]interface{})
-	}
-	t.TTL = trashCleanTTL
-
-	lock := fslock.New(trashConfPath)
+	lock := fslock.New(trashMapPath)
 	lockErr := lock.TryLock()
 	if lockErr != nil {
-		fmt.Fprintf(os.Stderr, "%s", "try again")
+		fmt.Println("falied to acquire lock > " + lockErr.Error())
 		return
 	}
-	defer func() {
-		lock.Unlock()
-		conff, err = json.MarshalIndent(t, "", " ")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s\n", err.Error())
-		}
-		err = ioutil.WriteFile(trashConfPath, conff, 0644)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s\n", err.Error())
-			os.Exit(1)
-		}
-		os.Exit(0)
-	}()
+	defer lock.Unlock()
+	trashMap, err := loadTrashMap(trashMapPath)
+	if err != nil {
+		fmt.Println("Failed to get user home directory or unable to load trashMap:", err)
+		os.Exit(1)
+	}
+	rb := NewLocalRecycleBin(trashPath, trashMap)
 
-	switch os.Args[1] {
-	case "put", "p":
-		err = t.put(dir, os.Args[2:]...)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s", err.Error())
-		}
-	case "restore", "r":
-		err = t.restore(dir, os.Args[2:]...)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s", err.Error())
-		}
-	case "ls":
-		t.list()
-	case "gc":
-		err := t.clean()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s", err.Error())
-		}
+	var rootCmd = &cobra.Command{Use: "rmbin"}
+
+	var deleteCmd = &cobra.Command{
+		Use:     "delete [files...]",
+		Aliases: []string{"d"},
+		Short:   "Move files to recycle bin",
+		Args:    cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			for _, arg := range args {
+				err := rb.Delete(arg)
+				if err != nil {
+					fmt.Println(err)
+				}
+			}
+			return rb.SaveTrashMap()
+		},
+	}
+
+	var restoreCmd = &cobra.Command{
+		Use:     "restore [files...]",
+		Aliases: []string{"r"},
+		Short:   "Restore files from recycle bin",
+		Args:    cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			for _, arg := range args {
+				err := rb.Restore(arg)
+				if err != nil {
+					fmt.Println(err)
+				}
+			}
+			return rb.SaveTrashMap()
+		},
+	}
+
+	var garbageCollectCmd = &cobra.Command{
+		Use:   "gc [days]",
+		Short: "Clean up the recycle bin",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			days := 30
+			if len(args) == 1 {
+				var err error
+				days, err = strconv.Atoi(args[0])
+				if err != nil {
+					return err
+				}
+			}
+
+			err := rb.GarbageCollect(days)
+			if err != nil {
+				fmt.Println(err)
+			}
+			return rb.SaveTrashMap()
+		},
+	}
+
+	rootCmd.AddCommand(deleteCmd)
+	rootCmd.AddCommand(restoreCmd)
+	rootCmd.AddCommand(garbageCollectCmd)
+
+	err = rootCmd.Execute()
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
 	}
 }
