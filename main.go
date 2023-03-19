@@ -82,7 +82,7 @@ func (rb *LocalRecycleBin) GarbageCollect(days int) error {
 			if err != nil {
 				return err
 			}
-			originalPath := getOriginalPath(rb, path)
+			originalPath := rb.GetOriginalPath(path)
 			if originalPath != "" {
 				delete(rb.trashMap, originalPath)
 				fmt.Printf("Removed %s\n", path)
@@ -93,8 +93,8 @@ func (rb *LocalRecycleBin) GarbageCollect(days int) error {
 	return err
 }
 
-func (rb *LocalRecycleBin) SaveTrashMap() error {
-	f, err := os.Create(filepath.Join(rb.trashPath, ".trashmap.json"))
+func (rb *LocalRecycleBin) SaveTrashMap(p string) error {
+	f, err := os.Create(p)
 	if err != nil {
 		return err
 	}
@@ -107,7 +107,7 @@ func (rb *LocalRecycleBin) SaveTrashMap() error {
 	return nil
 }
 
-func getOriginalPath(rb *LocalRecycleBin, trashFile string) string {
+func (rb *LocalRecycleBin) GetOriginalPath(trashFile string) string {
 	for k, v := range rb.trashMap {
 		if v == trashFile {
 			return k
@@ -118,14 +118,13 @@ func getOriginalPath(rb *LocalRecycleBin, trashFile string) string {
 }
 
 func loadTrashMap(trashMapPath string) (map[string]string, error) {
-	trashMap := make(map[string]string)
-
 	file, err := os.Open(trashMapPath)
 	if err != nil {
-		return trashMap, err
+		return nil, err
 	}
 	defer file.Close()
 
+	trashMap := make(map[string]string)
 	decoder := json.NewDecoder(file)
 	_ = decoder.Decode(&trashMap)
 
@@ -147,10 +146,10 @@ func initTrashMap(trashMapPath string) error {
 			return err
 		}
 		defer file.Close()
-	} else if err != nil {
-		return err
+		return nil
 	}
-	return nil
+
+	return err
 }
 
 func main() {
@@ -175,7 +174,7 @@ func main() {
 	defer lock.Unlock()
 	trashMap, err := loadTrashMap(trashMapPath)
 	if err != nil {
-		fmt.Println("Failed to get user home directory or unable to load trashMap:", err)
+		fmt.Println("failed to load trashMap:", err)
 		os.Exit(1)
 	}
 	rb := NewLocalRecycleBin(trashPath, trashMap)
@@ -194,7 +193,7 @@ func main() {
 					fmt.Println(err)
 				}
 			}
-			return rb.SaveTrashMap()
+			return rb.SaveTrashMap(trashMapPath)
 		},
 	}
 
@@ -210,7 +209,7 @@ func main() {
 					fmt.Println(err)
 				}
 			}
-			return rb.SaveTrashMap()
+			return rb.SaveTrashMap(trashMapPath)
 		},
 	}
 
@@ -232,7 +231,7 @@ func main() {
 			if err != nil {
 				fmt.Println(err)
 			}
-			return rb.SaveTrashMap()
+			return rb.SaveTrashMap(trashMapPath)
 		},
 	}
 
