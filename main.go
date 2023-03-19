@@ -22,11 +22,48 @@ func NewRecycleBin(trashPath string, trashMap map[string]string) *RecycleBin {
 	return &RecycleBin{trashPath, trashMap}
 }
 
+func (rb *RecycleBin) Delete2(path string) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	fileInfo, err := os.Stat(absPath)
+	if err != nil {
+		return err
+	}
+
+	fileName := fileInfo.Name()
+	fileExt := filepath.Ext(fileName)
+	fileBase := strings.TrimSuffix(fileName, fileExt)
+	trashFileName := fmt.Sprintf("%s_%d%s", fileBase, time.Now().Unix(), fileExt)
+
+	trashPath := filepath.Join(rb.trashPath, trashFileName)
+	err = os.Rename(absPath, trashPath)
+	if err != nil {
+		return err
+	}
+
+	rb.trashMap[absPath] = trashPath
+
+	fmt.Printf("Deleted %s, moved to %s\n", path, trashPath)
+	return nil
+}
+
 func (rb *RecycleBin) Delete(path string) error {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return err
 	}
+
+	if !force {
+		var confirmation string
+		fmt.Printf("rm: remove regular file '%s'? ", absPath)
+		fmt.Scanln(&confirmation)
+		if confirmation != "y" && confirmation != "yes" {
+			return nil
+		}
+	}
+
 	fileInfo, err := os.Stat(absPath)
 	if err != nil {
 		return err
@@ -159,6 +196,9 @@ func initTrashMap(trashMapPath string) error {
 	return err
 }
 
+var recursive bool
+var force bool
+
 func main() {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -198,14 +238,42 @@ func main() {
 		Args:    cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			for _, arg := range args {
-				err := rb.Delete(arg)
+				fileInfo, err := os.Stat(arg)
 				if err != nil {
-					fmt.Println(err)
+					return err
+				}
+
+				if fileInfo.IsDir() {
+					if recursive {
+						err := filepath.Walk(arg, func(path string, info os.FileInfo, err error) error {
+							if err != nil {
+								return err
+							}
+							if info.IsDir() {
+								return nil
+							}
+							return rb.Delete(path)
+						})
+						if err != nil {
+							return err
+						}
+					} else {
+						fmt.Printf("Cannot remove '%s': Is a directory\n", arg)
+						continue
+					}
+				} else {
+					err = rb.Delete(arg)
+					if err != nil {
+						return err
+					}
 				}
 			}
 			return rb.SaveTrashMap(trashMapPath)
 		},
 	}
+
+	deleteCmd.Flags().BoolVarP(&recursive, "recursive", "r", false, "remove directories and their contents recursively")
+	deleteCmd.Flags().BoolVarP(&force, "force", "f", false, "ignore nonexistent files and arguments, never prompt")
 
 	var restoreCmd = &cobra.Command{
 		Use:     "restore [files...]",
