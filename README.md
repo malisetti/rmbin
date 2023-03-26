@@ -1,6 +1,25 @@
 ### rmbin
 rmbin is a command-line tool that provides a local recycle bin for your files. When you delete a file with rmbin, it is moved to a trash folder instead of being deleted permanently. You can later restore or permanently delete the file from the trash folder as needed.
 
+## Installation
+This requires `go` 1.17+.
+
+### Go
+To install using `go`:
+```bash
+go install github.com/malisetti/rmbin@latest
+```
+
+### Build
+To build a binary for the local machine architecture:
+```bash
+git clone https://github.com/malisetti/rmbin.git
+cd rmbin
+go build
+```
+
+[releases]: https://github.com/malisetti/rmbin/releases
+
 ## Usage
 To use rmbin, you can run the following commands:
 
