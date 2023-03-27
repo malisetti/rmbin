@@ -1,4 +1,4 @@
-module rmbin
+module github.com/malisetti/rmbin
 
 go 1.17
 
